@@ -156,10 +156,37 @@ def main(argv: list[str] | None = None) -> None:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
 
         total = len(all_ids)
+
+        # Skip samples whose output already exists (allows restarts)
+        pending_ids = []
+        skipped = 0
+        for ref_id in all_ids:
+            xz_path = Path(output_dir) / f"{ref_id}-aligned.tsv.xz"
+            if xz_path.exists():
+                skipped += 1
+            else:
+                pending_ids.append(ref_id)
+
+        if skipped:
+            print(
+                f"Skipping {skipped} already-processed sample(s), "
+                f"{len(pending_ids)} remaining",
+                flush=True,
+            )
+
+        if not pending_ids:
+            total_elapsed = time.monotonic() - pipeline_start
+            print(
+                f"\nAll {total} samples already processed in {output_dir}/"
+                f"\nTotal pipeline: {total_elapsed:.1f}s",
+                flush=True,
+            )
+            return
+
         workers = get_worker_count(args.slow)
         signal_mem = sum(s.nbytes for s in sample_signals.values())
         print(
-            f"\nStarting parallel alignment: {total} references, "
+            f"\nStarting parallel alignment: {len(pending_ids)} references, "
             f"{workers} workers ({os.cpu_count()} cores), "
             f"signal data: {_format_size(signal_mem)}",
             flush=True,
@@ -178,7 +205,7 @@ def main(argv: list[str] | None = None) -> None:
                     sample_signals, ref_id, all_ids, scan_axis,
                     output_dir, n, total, args.slow, args.radius,
                 ): ref_id
-                for n, ref_id in enumerate(all_ids, 1)
+                for n, ref_id in enumerate(pending_ids, skipped + 1)
             }
             for future in as_completed(futures):
                 completed += 1
@@ -187,7 +214,8 @@ def main(argv: list[str] | None = None) -> None:
         align_elapsed = time.monotonic() - align_start
         total_elapsed = time.monotonic() - pipeline_start
         print(
-            f"\nDone. {total} xz files written to {output_dir}/"
+            f"\nDone. {len(pending_ids)} xz files written to {output_dir}/"
+            f" ({skipped} previously completed)"
             f"\nAlignment: {align_elapsed:.1f}s | Total pipeline: {total_elapsed:.1f}s",
             flush=True,
         )
