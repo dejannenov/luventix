@@ -38,8 +38,10 @@ def align_to_reference(
     sample_ids = [ref_id] + [sid for sid in all_ids if sid != ref_id]
     aligned = {ref_id: ref_signal.copy()}
 
-    for sample_id in sample_ids[1:]:
-        print(f"DTW aligning '{sample_id}' to reference '{ref_id}'...")
+    targets = sample_ids[1:]
+    total = len(targets)
+    for n, sample_id in enumerate(targets, 1):
+        print(f"  [{n} of {total}] DTW aligning '{sample_id}' to reference '{ref_id}'...")
         aligned[sample_id] = apply_intensity_threshold(
             align_with_dtw(ref_signal, sample_signals[sample_id]), threshold=0
         )
@@ -128,9 +130,10 @@ def main(argv: list[str] | None = None) -> None:
         output_dir = args.output_file if args.output_file else str(Path(args.input_file).parent)
         Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-        for ref_id in all_ids:
+        total = len(all_ids)
+        for n, ref_id in enumerate(all_ids, 1):
             tsv_path = Path(output_dir) / f"{ref_id}-aligned.tsv"
-            print(f"\n=== Aligning to reference: {ref_id} ===")
+            print(f"\n=== [{n} of {total}] Aligning to reference: {ref_id} ===")
             align_to_reference(sample_signals, ref_id, all_ids, scan_axis, str(tsv_path))
 
             # Compress to xz (LZMA2) and remove the TSV
@@ -138,7 +141,7 @@ def main(argv: list[str] | None = None) -> None:
             with open(tsv_path, "rb") as f_in, lzma.open(xz_path, "wb", preset=9) as f_out:
                 f_out.write(f_in.read())
             tsv_path.unlink()
-            print(f"Compressed → {xz_path}")
+            print(f"[{n} of {total}] Compressed → {xz_path}")
 
         print(f"\nDone. {len(all_ids)} xz files written to {output_dir}/")
     else:
