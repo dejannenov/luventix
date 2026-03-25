@@ -17,6 +17,9 @@ htmlcov/
 # Pytest
 .pytest_cache/
 
+# Large data files
+data/luventix-data.tsv
+
 # IDE
 .vscode/
 .idea/
