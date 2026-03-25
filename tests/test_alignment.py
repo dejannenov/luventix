@@ -69,9 +69,34 @@ class TestAlignWithDtw:
         result = align_with_dtw(ref_signal, tgt_signal)
         assert len(result) == len(ref_signal)
 
+    def test_full_dtw_identical_signals(self, ref_signal):
+        result = align_with_dtw(ref_signal, ref_signal, use_full_dtw=True)
+        np.testing.assert_allclose(result, ref_signal, atol=1.0)
+
+    def test_full_dtw_output_length(self, ref_signal, tgt_signal):
+        result = align_with_dtw(ref_signal, tgt_signal, use_full_dtw=True)
+        assert len(result) == len(ref_signal)
+
     def test_aligned_signal_is_float(self, ref_signal, tgt_signal):
         result = align_with_dtw(ref_signal, tgt_signal)
         assert result.dtype == float
+
+    def test_radius_exceeding_quarter_signal_length_raises(self, ref_signal, tgt_signal):
+        max_radius = len(ref_signal) // 4
+        import pytest
+
+        with pytest.raises(ValueError, match="exceeds maximum allowed value"):
+            align_with_dtw(ref_signal, tgt_signal, radius=max_radius + 1)
+
+    def test_radius_at_quarter_signal_length_ok(self, ref_signal, tgt_signal):
+        max_radius = len(ref_signal) // 4
+        result = align_with_dtw(ref_signal, tgt_signal, radius=max_radius)
+        assert len(result) == len(ref_signal)
+
+    def test_radius_validation_skipped_for_full_dtw(self, ref_signal, tgt_signal):
+        # Should not raise even with a large radius when using full DTW
+        result = align_with_dtw(ref_signal, tgt_signal, use_full_dtw=True, radius=999)
+        assert len(result) == len(ref_signal)
 
 
 class TestApplyIntensityThreshold:

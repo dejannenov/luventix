@@ -41,3 +41,6 @@ class TestGetWorkerCount:
 
     def test_returns_int(self):
         assert isinstance(get_worker_count(), int)
+
+    def test_full_dtw_caps_at_two(self):
+        assert get_worker_count(use_full_dtw=True) <= 2

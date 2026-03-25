@@ -16,18 +16,27 @@ def align_to_reference(
     all_ids: list[str],
     scan_axis: object,
     output_file: str,
+    use_full_dtw: bool = False,
+    file_label: str = "",
+    radius: int = 1,
 ) -> None:
     """Align all samples to a single reference and export."""
     ref_signal = sample_signals[ref_id]
     sample_ids = [ref_id] + [sid for sid in all_ids if sid != ref_id]
     aligned = {ref_id: ref_signal.copy()}
+    dtw_label = "full DTW" if use_full_dtw else "FastDTW"
+    prefix = f"{file_label} " if file_label else ""
 
     targets = sample_ids[1:]
     total = len(targets)
     for n, sample_id in enumerate(targets, 1):
-        print(f"  [{n} of {total}] DTW aligning '{sample_id}' to reference '{ref_id}'...")
+        print(
+            f"  {prefix}[{n} of {total}] {dtw_label} aligning "
+            f"'{sample_id}' to reference '{ref_id}'..."
+        )
         aligned[sample_id] = apply_intensity_threshold(
-            align_with_dtw(ref_signal, sample_signals[sample_id]), threshold=0
+            align_with_dtw(ref_signal, sample_signals[sample_id], use_full_dtw, radius=radius),
+            threshold=0,
         )
 
     export_aligned_matrix(aligned, sample_ids, scan_axis, output_file)
@@ -42,6 +51,8 @@ def align_and_compress(
     output_dir: str,
     n: int,
     total: int,
+    use_full_dtw: bool = False,
+    radius: int = 1,
 ) -> str:
     """Align all samples to one reference, export, compress to xz, and remove the TSV.
 
@@ -50,11 +61,17 @@ def align_and_compress(
     t0 = time.monotonic()
     tsv_path = Path(output_dir) / f"{ref_id}-aligned.tsv"
     print(f"\n=== [{n} of {total}] Aligning to reference: {ref_id} ===")
-    align_to_reference(sample_signals, ref_id, all_ids, scan_axis, str(tsv_path))
+    file_label = f"[{n} of {total}]"
+    align_to_reference(
+        sample_signals, ref_id, all_ids, scan_axis, str(tsv_path), use_full_dtw, file_label,
+        radius=radius,
+    )
 
     xz_path = tsv_path.with_suffix(".tsv.xz")
     tsv_size = tsv_path.stat().st_size
-    with open(tsv_path, "rb") as f_in, lzma.open(xz_path, "wb", preset=9) as f_out:
+    # preset 6 is the default; preset 9 uses ~600MB RAM per stream which
+    # compounds badly when multiple workers compress in parallel.
+    with open(tsv_path, "rb") as f_in, lzma.open(xz_path, "wb", preset=6) as f_out:
         f_out.write(f_in.read())
     xz_size = xz_path.stat().st_size
     tsv_path.unlink()
@@ -67,6 +84,13 @@ def align_and_compress(
     )
 
 
-def get_worker_count() -> int:
-    """Return the number of parallel workers: 75% of CPU cores, minimum 1."""
+def get_worker_count(use_full_dtw: bool = False) -> int:
+    """Return the number of parallel workers.
+
+    For FastDTW: 75% of CPU cores (CPU-bound).
+    For full DTW: cap at 2 workers to avoid memory exhaustion — the full
+    O(N^2) cost matrix can consume tens of GB per alignment.
+    """
+    if use_full_dtw:
+        return min(2, os.cpu_count() or 1)
     return max(1, math.floor(os.cpu_count() * 0.75))

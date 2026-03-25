@@ -1,7 +1,6 @@
-"""Signal alignment via anchor-peak variable shift and FastDTW."""
+"""Signal alignment via anchor-peak variable shift and DTW."""
 
 import numpy as np
-from fastdtw import fastdtw
 from scipy.interpolate import interp1d
 
 
@@ -45,16 +44,45 @@ def _deduplicate_path(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndar
     return unique_x, sum_y / counts
 
 
-def align_with_dtw(ref: np.ndarray, target: np.ndarray) -> np.ndarray:
-    """Align target signal to reference using FastDTW.
+def align_with_dtw(
+    ref: np.ndarray, target: np.ndarray, use_full_dtw: bool = False, radius: int = 1
+) -> np.ndarray:
+    """Align target signal to reference using DTW.
+
+    Args:
+        ref: Reference signal.
+        target: Target signal to align.
+        use_full_dtw: If True, use the full O(N^2) DTW algorithm (dtw-python)
+            for maximum accuracy. If False (default), use FastDTW which is
+            approximate but much faster.
+        radius: FastDTW accuracy radius (default 1). Higher values explore
+            more of the cost matrix for better accuracy. Ignored when
+            use_full_dtw is True.
 
     Returns the warped target signal resampled to match the reference length.
     """
     ref = np.ravel(ref).astype(float)
     target = np.ravel(target).astype(float)
 
-    _, path = fastdtw(ref, target, dist=_scalar_distance)
-    _ref_indices, target_indices = zip(*path, strict=True)
+    max_radius = len(ref) // 4
+    if not use_full_dtw and radius > max_radius:
+        raise ValueError(
+            f"radius={radius} exceeds maximum allowed value of {max_radius} "
+            f"(1/4 of signal length {len(ref)})"
+        )
+
+    if use_full_dtw:
+        from dtw import dtw as full_dtw
+
+        alignment = full_dtw(ref, target, dist_method="euclidean")
+        ref_indices = alignment.index1
+        target_indices = alignment.index2
+    else:
+        from fastdtw import fastdtw
+
+        _, path = fastdtw(ref, target, radius=radius, dist=_scalar_distance)
+        ref_indices, target_indices = zip(*path, strict=True)
+
     tgt_arr = np.array(target_indices)
 
     unique_x, avg_y = _deduplicate_path(tgt_arr, target[tgt_arr])
@@ -80,6 +108,8 @@ def align_all_samples(
     target_anchor_peaks: dict[str, tuple[int, int]],
     ref_peaks: list[int],
     intensity_threshold: float = 0,
+    use_full_dtw: bool = False,
+    radius: int = 1,
 ) -> dict[str, np.ndarray]:
     """Run the full two-phase alignment pipeline on all samples.
 
@@ -104,7 +134,7 @@ def align_all_samples(
     for sample_id in list(aligned):
         if sample_id == ref_id:
             continue
-        aligned[sample_id] = align_with_dtw(ref_signal, aligned[sample_id])
+        aligned[sample_id] = align_with_dtw(ref_signal, aligned[sample_id], use_full_dtw, radius=radius)
 
     # Threshold
     for sample_id in aligned:

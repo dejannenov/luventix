@@ -74,6 +74,32 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "(or the directory specified by --out). Cannot be used with --align-to-id."
         ),
     )
+    parser.add_argument(
+        "--slow",
+        action="store_true",
+        help=(
+            "Use the full O(N^2) DTW algorithm instead of FastDTW. "
+            "Produces more accurate alignments but is significantly slower "
+            "and uses much more memory (N^2). Consider --radius as a "
+            "middle ground before resorting to --slow. "
+            "Cannot be used with --radius."
+        ),
+    )
+    parser.add_argument(
+        "--radius",
+        type=int,
+        default=1,
+        help=(
+            "Accuracy radius for FastDTW (default: 1). Higher values "
+            "explore more of the cost matrix, improving alignment accuracy "
+            "at the cost of speed. Memory and time scale as O(N * radius). "
+            "Maximum allowed value is 1/4 of the signal length. "
+            "Typical values: 1 (fast, usually sufficient for smooth "
+            "chromatographic signals), 10-20 (better for noisy or poorly "
+            "correlated signals), 50+ (approaches full DTW quality without "
+            "the O(N^2) memory cost). Ignored when --slow is used."
+        ),
+    )
 
     args = parser.parse_args(argv)
 
@@ -86,6 +112,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         if args.align_to_id is None:
             parser.error("--align-to-id is required unless --full is specified")
 
+    if args.slow and args.radius != 1:
+        parser.error("--radius cannot be used with --slow")
+
     return args
 
 
@@ -96,7 +125,14 @@ def main(argv: list[str] | None = None) -> None:
 
     input_path = Path(args.input_file)
     file_size = input_path.stat().st_size
+    if args.slow:
+        dtw_mode = "full DTW (--slow)"
+    elif args.radius != 1:
+        dtw_mode = f"FastDTW (radius={args.radius})"
+    else:
+        dtw_mode = "FastDTW (default, radius=1)"
     print(f"Input: {input_path} ({_format_size(file_size)})", flush=True)
+    print(f"DTW algorithm: {dtw_mode}", flush=True)
 
     # Detect metadata columns
     print("Detecting metadata columns...", flush=True)
@@ -120,7 +156,7 @@ def main(argv: list[str] | None = None) -> None:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
 
         total = len(all_ids)
-        workers = get_worker_count()
+        workers = get_worker_count(args.slow)
         signal_mem = sum(s.nbytes for s in sample_signals.values())
         print(
             f"\nStarting parallel alignment: {total} references, "
@@ -140,7 +176,7 @@ def main(argv: list[str] | None = None) -> None:
                 pool.submit(
                     align_and_compress,
                     sample_signals, ref_id, all_ids, scan_axis,
-                    output_dir, n, total,
+                    output_dir, n, total, args.slow, args.radius,
                 ): ref_id
                 for n, ref_id in enumerate(all_ids, 1)
             }
@@ -170,7 +206,10 @@ def main(argv: list[str] | None = None) -> None:
 
         print(f"\nAligning all samples to reference '{args.align_to_id}'...", flush=True)
         align_start = time.monotonic()
-        align_to_reference(sample_signals, args.align_to_id, all_ids, scan_axis, args.output_file)
+        align_to_reference(
+            sample_signals, args.align_to_id, all_ids, scan_axis, args.output_file, args.slow,
+            radius=args.radius,
+        )
         total_elapsed = time.monotonic() - pipeline_start
         print(f"Total pipeline: {total_elapsed:.1f}s", flush=True)
 

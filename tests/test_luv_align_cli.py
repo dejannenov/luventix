@@ -20,6 +20,13 @@ class TestParseArgs:
         assert args.output_file == "output.tsv"
         assert args.align_to_id == "s1"
         assert args.full is False
+        assert args.slow is False
+
+    def test_slow_flag(self):
+        args = cli.parse_args(
+            ["--in", "input.tsv", "--out", "output.tsv", "--align-to-id", "s1", "--slow"]
+        )
+        assert args.slow is True
 
     def test_full_mode_args(self):
         args = cli.parse_args(["--in", "input.tsv", "--full"])
