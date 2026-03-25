@@ -113,7 +113,14 @@ class TestMainSingleMode:
 
 
 class TestMainFullMode:
-    def test_creates_one_zip_per_sample(self, sample_tsv, tmp_path):
+    def _decompress_xz(self, xz_path, dest_path):
+        """Helper to decompress an .xz file."""
+        import lzma
+
+        with lzma.open(xz_path, "rb") as f_in, open(dest_path, "wb") as f_out:
+            f_out.write(f_in.read())
+
+    def test_creates_one_xz_per_sample(self, sample_tsv, tmp_path):
         import shutil
 
         input_copy = str(tmp_path / "data.tsv")
@@ -122,12 +129,11 @@ class TestMainFullMode:
         cli.main(["--in", input_copy, "--full"])
 
         for ref_id in ["ref-001", "tgt-001", "tgt-002"]:
-            assert (tmp_path / f"{ref_id}-aligned.zip").exists()
+            assert (tmp_path / f"{ref_id}-aligned.tsv.xz").exists()
             assert not (tmp_path / f"{ref_id}-aligned.tsv").exists()
 
-    def test_zip_contains_correct_tsv(self, sample_tsv, tmp_path):
+    def test_xz_decompresses_to_valid_tsv(self, sample_tsv, tmp_path):
         import shutil
-        import zipfile
 
         input_copy = str(tmp_path / "data.tsv")
         shutil.copy(sample_tsv, input_copy)
@@ -135,13 +141,13 @@ class TestMainFullMode:
         cli.main(["--in", input_copy, "--full"])
 
         for ref_id in ["ref-001", "tgt-001", "tgt-002"]:
-            zip_path = tmp_path / f"{ref_id}-aligned.zip"
-            with zipfile.ZipFile(zip_path) as zf:
-                assert zf.namelist() == [f"{ref_id}-aligned.tsv"]
+            tsv_path = tmp_path / "extracted" / f"{ref_id}-aligned.tsv"
+            tsv_path.parent.mkdir(exist_ok=True)
+            self._decompress_xz(tmp_path / f"{ref_id}-aligned.tsv.xz", tsv_path)
+            assert tsv_path.stat().st_size > 0
 
     def test_each_file_has_correct_reference(self, sample_tsv, tmp_path):
         import shutil
-        import zipfile
 
         from luv_align.io import load_sample_matrix
 
@@ -151,17 +157,15 @@ class TestMainFullMode:
         cli.main(["--in", input_copy, "--full"])
 
         for ref_id in ["ref-001", "tgt-001", "tgt-002"]:
-            zip_path = tmp_path / f"{ref_id}-aligned.zip"
-            with zipfile.ZipFile(zip_path) as zf:
-                zf.extract(f"{ref_id}-aligned.tsv", tmp_path / "extracted")
-            tsv_path = str(tmp_path / "extracted" / f"{ref_id}-aligned.tsv")
-            df, _, _ = load_sample_matrix(tsv_path, metadata_cols=1)
+            tsv_path = tmp_path / "extracted" / f"{ref_id}-aligned.tsv"
+            tsv_path.parent.mkdir(exist_ok=True)
+            self._decompress_xz(tmp_path / f"{ref_id}-aligned.tsv.xz", tsv_path)
+            df, _, _ = load_sample_matrix(str(tsv_path), metadata_cols=1)
             assert df.iloc[0]["sampleID"] == ref_id
             assert len(df) == 3
 
     def test_reference_row_unchanged_in_each_file(self, sample_tsv, tmp_path):
         import shutil
-        import zipfile
 
         from luv_align.io import load_sample_matrix
 
@@ -173,11 +177,10 @@ class TestMainFullMode:
         _orig_df, _, orig_features = load_sample_matrix(sample_tsv, metadata_cols=3)
 
         for i, ref_id in enumerate(["ref-001", "tgt-001", "tgt-002"]):
-            zip_path = tmp_path / f"{ref_id}-aligned.zip"
-            with zipfile.ZipFile(zip_path) as zf:
-                zf.extract(f"{ref_id}-aligned.tsv", tmp_path / "extracted")
-            tsv_path = str(tmp_path / "extracted" / f"{ref_id}-aligned.tsv")
-            _aligned_df, _, aligned_features = load_sample_matrix(tsv_path, metadata_cols=1)
+            tsv_path = tmp_path / "extracted" / f"{ref_id}-aligned.tsv"
+            tsv_path.parent.mkdir(exist_ok=True)
+            self._decompress_xz(tmp_path / f"{ref_id}-aligned.tsv.xz", tsv_path)
+            _aligned_df, _, aligned_features = load_sample_matrix(str(tsv_path), metadata_cols=1)
             orig_signal = orig_features.iloc[i].values.astype(float)
             aligned_ref = aligned_features.iloc[0].values.astype(float)
             np.testing.assert_allclose(aligned_ref, orig_signal, atol=1e-10)
@@ -188,5 +191,5 @@ class TestMainFullMode:
 
         assert out_dir.is_dir()
         for ref_id in ["ref-001", "tgt-001", "tgt-002"]:
-            assert (out_dir / f"{ref_id}-aligned.zip").exists()
+            assert (out_dir / f"{ref_id}-aligned.tsv.xz").exists()
             assert not (out_dir / f"{ref_id}-aligned.tsv").exists()

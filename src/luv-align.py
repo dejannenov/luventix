@@ -2,7 +2,7 @@
 
 import argparse
 import sys
-import zipfile
+import lzma
 from pathlib import Path
 
 # Ensure the package is importable when running from any directory
@@ -133,14 +133,14 @@ def main(argv: list[str] | None = None) -> None:
             print(f"\n=== Aligning to reference: {ref_id} ===")
             align_to_reference(sample_signals, ref_id, all_ids, scan_axis, str(tsv_path))
 
-            # Compress to zip and remove the TSV
-            zip_path = tsv_path.with_suffix(".zip")
-            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                zf.write(tsv_path, tsv_path.name)
+            # Compress to xz (LZMA2) and remove the TSV
+            xz_path = tsv_path.with_suffix(".tsv.xz")
+            with open(tsv_path, "rb") as f_in, lzma.open(xz_path, "wb", preset=9) as f_out:
+                f_out.write(f_in.read())
             tsv_path.unlink()
-            print(f"Compressed → {zip_path}")
+            print(f"Compressed → {xz_path}")
 
-        print(f"\nDone. {len(all_ids)} zip files written to {output_dir}/")
+        print(f"\nDone. {len(all_ids)} xz files written to {output_dir}/")
     else:
         # Single reference alignment
         if args.align_to_id not in all_ids:
