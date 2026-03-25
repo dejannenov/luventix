@@ -1,45 +1,32 @@
-import pandas as pd
-import numpy as np
+"""Peak identification — detect and visualize peaks in a reference sample."""
+
+import sys
+from pathlib import Path
+
 import matplotlib.pyplot as plt
-from scipy.signal import find_peaks
-from scipy.interpolate import interp1d
-from scipy.signal import find_peaks
 
+# Ensure the package is importable when running from data/
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-#Parameters
-input_file = "SIBO_Test_Set.tsv"
-metadata_cols = 3  # number of metadata columns before scan intensities
-sample_id_to_plot = 'sibo-uk-6'  # specify sample ID
+from luv_align.config import IdentPeaksConfig
+from luv_align.io import extract_signal, load_sample_matrix
+from luv_align.peaks import detect_peaks
+from luv_align.plotting import plot_signal_with_peaks
 
+# Parameters
+config = IdentPeaksConfig()
 
-#Load Data
-df = pd.read_csv(input_file, sep='\t')
-features_df = df.iloc[:, metadata_cols:].copy()
-features_df.columns = features_df.columns.astype(int)
-scan_axis = features_df.columns.values
+# Load Data
+df, scan_axis, features_df = load_sample_matrix(config.input_file, config.metadata_cols)
 
+# Extract Raw Signal
+ref_signal = extract_signal(df, features_df, config.sample_id_to_plot)
 
-#Extract Raw Signal
-row = df[df['sampleID'] == sample_id_to_plot]
-if row.empty:
-    print(f"Sample '{sample_id_to_plot}' not found")
-signal = pd.to_numeric(features_df.loc[row.index[0]], errors='coerce').fillna(0)
-ref_signal = signal.values
+# Detect Peaks
+peak_indices, _ = detect_peaks(
+    ref_signal, scan_axis, config.peak_height_fraction, config.peak_distance
+)
 
-
-plt.figure(figsize=(16, 6))
-plt.plot(scan_axis, ref_signal, label=sample_id_to_plot, lw=1)
-plt.xlabel("Scan Number")
-plt.ylabel("Intensity")
-plt.title(f"Reference Sample: {sample_id_to_plot}")
-plt.grid(True)
-plt.legend()
-
-
-peaks, _ = find_peaks(ref_signal, height=np.max(ref_signal) * 0.08, distance=50)
-plt.plot(scan_axis[peaks], ref_signal[peaks], "rx", label="Detected Peaks")
-for p in peaks:
-    plt.annotate(str(scan_axis[p]), (scan_axis[p], ref_signal[p]), textcoords="offset points", xytext=(0,10), ha='center', fontsize=8)
-
-plt.tight_layout()
+# Plot
+plot_signal_with_peaks(ref_signal, scan_axis, config.sample_id_to_plot, peak_indices)
 plt.show()

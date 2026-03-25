@@ -1,50 +1,23 @@
-import pandas as pd
+"""Interactive visualization of aligned output with hover tooltips."""
+
+import sys
+from pathlib import Path
+
 import matplotlib.pyplot as plt
-import numpy as np
-import mplcursors
 
-#Parameters
-input_file = "Aligned_SIBO_Test_Set.tsv"
-metadata_cols = 1  # number of metadata columns before features
+# Ensure the package is importable when running from data/
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# === Load Data ===
-df = pd.read_csv(input_file, sep='\t')
-features_df = df.iloc[:, metadata_cols:]
-features_df.columns = features_df.columns.str.strip()
-features_df.columns = features_df.columns.astype(int)
+from luv_align.config import PlotConfig
+from luv_align.io import load_sample_matrix
+from luv_align.plotting import plot_with_tooltips
 
-#Plot
-plt.figure(figsize=(14, 7))
-lines = []
+# Parameters
+config = PlotConfig()
 
-for idx, row in df.iterrows():
-    sample_id = row['sampleID']
-    intensities = pd.to_numeric(features_df.iloc[idx], errors='coerce')
-    
-    line, = plt.plot(
-        features_df.columns,
-        intensities,
-        label=sample_id,
-        linewidth=1
-    )
-    line.set_gid(sample_id)
-    lines.append(line)
+# Load Data
+df, scan_axis, features_df = load_sample_matrix(config.input_file, config.metadata_cols)
 
-plt.xlabel("Scan Index")
-plt.ylabel("Intensity")
-plt.title("Plot Samples")
-#plt.legend(fontsize='small', ncol=3)
-plt.grid(True)
-plt.tight_layout()
-
-#Interactive tooltip on hover
-cursor = mplcursors.cursor(lines, hover=True)
-
-@cursor.connect("add")
-def on_add(sel):
-    x, y = sel.target
-    sample_name = sel.artist.get_gid()
-    sel.annotation.set_text(f"{sample_name}\nScan: {int(x)}\nIntensity: {y:.2f}")
-    sel.annotation.get_bbox_patch().set(alpha=0.9)
-
+# Plot with interactive tooltips
+plot_with_tooltips(df, features_df)
 plt.show()
