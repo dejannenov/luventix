@@ -3,6 +3,7 @@
 import numpy as np
 
 from luv_align.alignment import (
+    _deduplicate_path,
     align_all_samples,
     align_with_dtw,
     apply_intensity_threshold,
@@ -33,6 +34,29 @@ class TestVariableShiftSignal:
         result = variable_shift_signal(signal, ref_peaks=[10, 40], tgt_peaks=[40, 45])
         # Large shift pushes early indices to negative source positions → fill_value=0
         assert result[0] == 0.0
+
+
+class TestDeduplicatePath:
+    def test_no_duplicates_unchanged(self):
+        x = np.array([0, 1, 2, 3])
+        y = np.array([10.0, 20.0, 30.0, 40.0])
+        ux, uy = _deduplicate_path(x, y)
+        np.testing.assert_array_equal(ux, x)
+        np.testing.assert_array_equal(uy, y)
+
+    def test_duplicates_averaged(self):
+        x = np.array([0, 1, 1, 2])
+        y = np.array([10.0, 20.0, 30.0, 40.0])
+        ux, uy = _deduplicate_path(x, y)
+        np.testing.assert_array_equal(ux, [0, 1, 2])
+        np.testing.assert_array_equal(uy, [10.0, 25.0, 40.0])
+
+    def test_all_same_index(self):
+        x = np.array([5, 5, 5])
+        y = np.array([10.0, 20.0, 30.0])
+        ux, uy = _deduplicate_path(x, y)
+        np.testing.assert_array_equal(ux, [5])
+        np.testing.assert_allclose(uy, [20.0])
 
 
 class TestAlignWithDtw:

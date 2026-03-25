@@ -30,6 +30,21 @@ def variable_shift_signal(
     return f(scan_indices - variable_shifts)
 
 
+def _deduplicate_path(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Deduplicate DTW path indices by averaging y-values at repeated x-values.
+
+    FastDTW can map multiple reference indices to the same target index,
+    producing duplicate x-values that cause division-by-zero in interp1d.
+    """
+    unique_x, inverse = np.unique(x, return_inverse=True)
+    # Sum y-values per unique x, then divide by count
+    sum_y = np.zeros(len(unique_x), dtype=np.float64)
+    np.add.at(sum_y, inverse, y)
+    counts = np.zeros(len(unique_x), dtype=np.int64)
+    np.add.at(counts, inverse, 1)
+    return unique_x, sum_y / counts
+
+
 def align_with_dtw(ref: np.ndarray, target: np.ndarray) -> np.ndarray:
     """Align target signal to reference using FastDTW.
 
@@ -40,9 +55,12 @@ def align_with_dtw(ref: np.ndarray, target: np.ndarray) -> np.ndarray:
 
     _, path = fastdtw(ref, target, dist=_scalar_distance)
     _ref_indices, target_indices = zip(*path, strict=True)
+    tgt_arr = np.array(target_indices)
+
+    unique_x, avg_y = _deduplicate_path(tgt_arr, target[tgt_arr])
     interp_func = interp1d(
-        target_indices,
-        target[np.array(target_indices)],
+        unique_x,
+        avg_y,
         kind="linear",
         bounds_error=False,
         fill_value=0,

@@ -1,15 +1,17 @@
 """luv-align: Align chromatographic sample signals to a reference using FastDTW."""
 
 import argparse
+import os
 import sys
-import lzma
+import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 # Ensure the package is importable when running from any directory
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from luv_align.alignment import align_with_dtw, apply_intensity_threshold
-from luv_align.io import export_aligned_matrix, extract_multiple_signals, load_sample_matrix
+from luv_align.io import _format_size, extract_multiple_signals, load_sample_matrix
+from luv_align.pipeline import align_and_compress, align_to_reference, get_worker_count
 
 
 def detect_metadata_cols(filepath: str) -> int:
@@ -24,30 +26,6 @@ def detect_metadata_cols(filepath: str) -> int:
         except ValueError:
             continue
     raise ValueError(f"No numeric scan columns found in '{filepath}'")
-
-
-def align_to_reference(
-    sample_signals: dict[str, object],
-    ref_id: str,
-    all_ids: list[str],
-    scan_axis: object,
-    output_file: str,
-) -> None:
-    """Align all samples to a single reference and export."""
-    ref_signal = sample_signals[ref_id]
-    sample_ids = [ref_id] + [sid for sid in all_ids if sid != ref_id]
-    aligned = {ref_id: ref_signal.copy()}
-
-    targets = sample_ids[1:]
-    total = len(targets)
-    for n, sample_id in enumerate(targets, 1):
-        print(f"  [{n} of {total}] DTW aligning '{sample_id}' to reference '{ref_id}'...")
-        aligned[sample_id] = apply_intensity_threshold(
-            align_with_dtw(ref_signal, sample_signals[sample_id]), threshold=0
-        )
-
-    export_aligned_matrix(aligned, sample_ids, scan_axis, output_file)
-    print(f"Aligned {len(sample_ids)} samples → {output_file}")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -113,10 +91,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     """Run the alignment pipeline."""
+    pipeline_start = time.monotonic()
     args = parse_args(argv)
 
+    input_path = Path(args.input_file)
+    file_size = input_path.stat().st_size
+    print(f"Input: {input_path} ({_format_size(file_size)})", flush=True)
+
     # Detect metadata columns
+    print("Detecting metadata columns...", flush=True)
     metadata_cols = detect_metadata_cols(args.input_file)
+    print(f"Found {metadata_cols} metadata column(s)", flush=True)
 
     # Load data
     df, scan_axis, features_df = load_sample_matrix(args.input_file, metadata_cols)
@@ -127,23 +112,49 @@ def main(argv: list[str] | None = None) -> None:
     if args.full:
         # Align to every sample as reference
         sample_signals = extract_multiple_signals(df, features_df, all_ids)
+
+        # Release DataFrames — signals are now in numpy arrays
+        del df, features_df
+
         output_dir = args.output_file if args.output_file else str(Path(args.input_file).parent)
         Path(output_dir).mkdir(parents=True, exist_ok=True)
 
         total = len(all_ids)
-        for n, ref_id in enumerate(all_ids, 1):
-            tsv_path = Path(output_dir) / f"{ref_id}-aligned.tsv"
-            print(f"\n=== [{n} of {total}] Aligning to reference: {ref_id} ===")
-            align_to_reference(sample_signals, ref_id, all_ids, scan_axis, str(tsv_path))
+        workers = get_worker_count()
+        signal_mem = sum(s.nbytes for s in sample_signals.values())
+        print(
+            f"\nStarting parallel alignment: {total} references, "
+            f"{workers} workers ({os.cpu_count()} cores), "
+            f"signal data: {_format_size(signal_mem)}",
+            flush=True,
+        )
+        print(
+            f"Each worker receives ~{_format_size(signal_mem)} of signal data\n",
+            flush=True,
+        )
 
-            # Compress to xz (LZMA2) and remove the TSV
-            xz_path = tsv_path.with_suffix(".tsv.xz")
-            with open(tsv_path, "rb") as f_in, lzma.open(xz_path, "wb", preset=9) as f_out:
-                f_out.write(f_in.read())
-            tsv_path.unlink()
-            print(f"[{n} of {total}] Compressed → {xz_path}")
+        align_start = time.monotonic()
+        completed = 0
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(
+                    align_and_compress,
+                    sample_signals, ref_id, all_ids, scan_axis,
+                    output_dir, n, total,
+                ): ref_id
+                for n, ref_id in enumerate(all_ids, 1)
+            }
+            for future in as_completed(futures):
+                completed += 1
+                print(future.result(), flush=True)
 
-        print(f"\nDone. {len(all_ids)} xz files written to {output_dir}/")
+        align_elapsed = time.monotonic() - align_start
+        total_elapsed = time.monotonic() - pipeline_start
+        print(
+            f"\nDone. {total} xz files written to {output_dir}/"
+            f"\nAlignment: {align_elapsed:.1f}s | Total pipeline: {total_elapsed:.1f}s",
+            flush=True,
+        )
     else:
         # Single reference alignment
         if args.align_to_id not in all_ids:
@@ -155,7 +166,13 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit(1)
 
         sample_signals = extract_multiple_signals(df, features_df, all_ids)
+        del df, features_df
+
+        print(f"\nAligning all samples to reference '{args.align_to_id}'...", flush=True)
+        align_start = time.monotonic()
         align_to_reference(sample_signals, args.align_to_id, all_ids, scan_axis, args.output_file)
+        total_elapsed = time.monotonic() - pipeline_start
+        print(f"Total pipeline: {total_elapsed:.1f}s", flush=True)
 
 
 if __name__ == "__main__":

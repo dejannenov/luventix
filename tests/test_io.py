@@ -4,12 +4,24 @@ import numpy as np
 import pytest
 
 from luv_align.io import (
+    _format_size,
     export_aligned_matrix,
     extract_multiple_signals,
     extract_signal,
     load_peaks_file,
     load_sample_matrix,
 )
+
+
+class TestFormatSize:
+    def test_bytes(self):
+        assert _format_size(512) == "512.0 B"
+
+    def test_megabytes(self):
+        assert _format_size(1024 * 1024 * 5) == "5.0 MB"
+
+    def test_terabytes(self):
+        assert _format_size(1024**4 * 2) == "2.0 TB"
 
 
 class TestLoadSampleMatrix:
@@ -55,6 +67,11 @@ class TestExtractMultipleSignals:
         assert len(signals) == 2
         assert "ref-001" in signals
         assert "tgt-001" in signals
+
+    def test_raises_on_missing_sample(self, sample_tsv):
+        df, _, features_df = load_sample_matrix(sample_tsv, metadata_cols=3)
+        with pytest.raises(ValueError, match="not found"):
+            extract_multiple_signals(df, features_df, ["ref-001", "nonexistent"])
 
 
 class TestExportAlignedMatrix:
