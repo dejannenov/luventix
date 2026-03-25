@@ -40,9 +40,10 @@ class TestParseArgs:
         with pytest.raises(SystemExit):
             cli.parse_args(["--in", "in.tsv", "--out", "out.tsv"])
 
-    def test_full_with_out_rejected(self):
-        with pytest.raises(SystemExit):
-            cli.parse_args(["--in", "in.tsv", "--full", "--out", "out.tsv"])
+    def test_full_with_out_accepted(self):
+        args = cli.parse_args(["--in", "in.tsv", "--full", "--out", "/tmp/outdir"])
+        assert args.full is True
+        assert args.output_file == "/tmp/outdir"
 
     def test_full_with_align_to_id_rejected(self):
         with pytest.raises(SystemExit):
@@ -112,8 +113,7 @@ class TestMainSingleMode:
 
 
 class TestMainFullMode:
-    def test_creates_one_file_per_sample(self, sample_tsv, tmp_path):
-        # Copy input to tmp_path so output lands there
+    def test_creates_one_zip_per_sample(self, sample_tsv, tmp_path):
         import shutil
 
         input_copy = str(tmp_path / "data.tsv")
@@ -121,12 +121,27 @@ class TestMainFullMode:
 
         cli.main(["--in", input_copy, "--full"])
 
-        assert (tmp_path / "ref-001-aligned.tsv").exists()
-        assert (tmp_path / "tgt-001-aligned.tsv").exists()
-        assert (tmp_path / "tgt-002-aligned.tsv").exists()
+        for ref_id in ["ref-001", "tgt-001", "tgt-002"]:
+            assert (tmp_path / f"{ref_id}-aligned.zip").exists()
+            assert not (tmp_path / f"{ref_id}-aligned.tsv").exists()
+
+    def test_zip_contains_correct_tsv(self, sample_tsv, tmp_path):
+        import shutil
+        import zipfile
+
+        input_copy = str(tmp_path / "data.tsv")
+        shutil.copy(sample_tsv, input_copy)
+
+        cli.main(["--in", input_copy, "--full"])
+
+        for ref_id in ["ref-001", "tgt-001", "tgt-002"]:
+            zip_path = tmp_path / f"{ref_id}-aligned.zip"
+            with zipfile.ZipFile(zip_path) as zf:
+                assert zf.namelist() == [f"{ref_id}-aligned.tsv"]
 
     def test_each_file_has_correct_reference(self, sample_tsv, tmp_path):
         import shutil
+        import zipfile
 
         from luv_align.io import load_sample_matrix
 
@@ -135,14 +150,18 @@ class TestMainFullMode:
 
         cli.main(["--in", input_copy, "--full"])
 
-        # Each file should have its reference as the first row
         for ref_id in ["ref-001", "tgt-001", "tgt-002"]:
-            df, _, _ = load_sample_matrix(str(tmp_path / f"{ref_id}-aligned.tsv"), metadata_cols=1)
+            zip_path = tmp_path / f"{ref_id}-aligned.zip"
+            with zipfile.ZipFile(zip_path) as zf:
+                zf.extract(f"{ref_id}-aligned.tsv", tmp_path / "extracted")
+            tsv_path = str(tmp_path / "extracted" / f"{ref_id}-aligned.tsv")
+            df, _, _ = load_sample_matrix(tsv_path, metadata_cols=1)
             assert df.iloc[0]["sampleID"] == ref_id
             assert len(df) == 3
 
     def test_reference_row_unchanged_in_each_file(self, sample_tsv, tmp_path):
         import shutil
+        import zipfile
 
         from luv_align.io import load_sample_matrix
 
@@ -151,13 +170,23 @@ class TestMainFullMode:
 
         cli.main(["--in", input_copy, "--full"])
 
-        # Load original signals
         _orig_df, _, orig_features = load_sample_matrix(sample_tsv, metadata_cols=3)
 
         for i, ref_id in enumerate(["ref-001", "tgt-001", "tgt-002"]):
-            _aligned_df, _, aligned_features = load_sample_matrix(
-                str(tmp_path / f"{ref_id}-aligned.tsv"), metadata_cols=1
-            )
+            zip_path = tmp_path / f"{ref_id}-aligned.zip"
+            with zipfile.ZipFile(zip_path) as zf:
+                zf.extract(f"{ref_id}-aligned.tsv", tmp_path / "extracted")
+            tsv_path = str(tmp_path / "extracted" / f"{ref_id}-aligned.tsv")
+            _aligned_df, _, aligned_features = load_sample_matrix(tsv_path, metadata_cols=1)
             orig_signal = orig_features.iloc[i].values.astype(float)
             aligned_ref = aligned_features.iloc[0].values.astype(float)
             np.testing.assert_allclose(aligned_ref, orig_signal, atol=1e-10)
+
+    def test_full_with_out_directory(self, sample_tsv, tmp_path):
+        out_dir = tmp_path / "custom_output"
+        cli.main(["--in", sample_tsv, "--full", "--out", str(out_dir)])
+
+        assert out_dir.is_dir()
+        for ref_id in ["ref-001", "tgt-001", "tgt-002"]:
+            assert (out_dir / f"{ref_id}-aligned.zip").exists()
+            assert not (out_dir / f"{ref_id}-aligned.tsv").exists()

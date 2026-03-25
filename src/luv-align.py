@@ -2,6 +2,7 @@
 
 import argparse
 import sys
+import zipfile
 from pathlib import Path
 
 # Ensure the package is importable when running from any directory
@@ -69,7 +70,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--out",
         dest="output_file",
         default=None,
-        help="Path for the output aligned TSV file. Not allowed with --full.",
+        help=(
+            "In single mode: path for the output aligned TSV file. "
+            "In --full mode: optional output directory for the aligned files "
+            "(defaults to the input file's directory)."
+        ),
     )
     parser.add_argument(
         "--align-to-id",
@@ -85,16 +90,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help=(
             "Align to every sample as reference, producing one output file per sample. "
-            "Output files are named <sample-id>-aligned.tsv in the input file's directory. "
-            "Cannot be used with --out or --align-to-id."
+            "Output files are named <sample-id>-aligned.tsv in the input file's directory "
+            "(or the directory specified by --out). Cannot be used with --align-to-id."
         ),
     )
 
     args = parser.parse_args(argv)
 
     if args.full:
-        if args.output_file is not None:
-            parser.error("--out cannot be used with --full")
         if args.align_to_id is not None:
             parser.error("--align-to-id cannot be used with --full")
     else:
@@ -122,14 +125,22 @@ def main(argv: list[str] | None = None) -> None:
     if args.full:
         # Align to every sample as reference
         sample_signals = extract_multiple_signals(df, features_df, all_ids)
-        output_dir = str(Path(args.input_file).parent)
+        output_dir = args.output_file if args.output_file else str(Path(args.input_file).parent)
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
 
         for ref_id in all_ids:
-            output_file = str(Path(output_dir) / f"{ref_id}-aligned.tsv")
+            tsv_path = Path(output_dir) / f"{ref_id}-aligned.tsv"
             print(f"\n=== Aligning to reference: {ref_id} ===")
-            align_to_reference(sample_signals, ref_id, all_ids, scan_axis, output_file)
+            align_to_reference(sample_signals, ref_id, all_ids, scan_axis, str(tsv_path))
 
-        print(f"\nDone. {len(all_ids)} alignment files written to {output_dir}/")
+            # Compress to zip and remove the TSV
+            zip_path = tsv_path.with_suffix(".zip")
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.write(tsv_path, tsv_path.name)
+            tsv_path.unlink()
+            print(f"Compressed → {zip_path}")
+
+        print(f"\nDone. {len(all_ids)} zip files written to {output_dir}/")
     else:
         # Single reference alignment
         if args.align_to_id not in all_ids:
