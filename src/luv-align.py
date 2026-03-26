@@ -14,6 +14,14 @@ from luv_align.io import _format_size, extract_multiple_signals, load_sample_mat
 from luv_align.pipeline import align_and_compress, align_to_reference, get_worker_count
 
 
+def _log(msg: str, log_fh=None) -> None:
+    """Print to stdout and optionally append to a log file."""
+    print(msg, flush=True)
+    if log_fh is not None:
+        log_fh.write(msg + "\n")
+        log_fh.flush()
+
+
 def detect_metadata_cols(filepath: str) -> int:
     """Detect the number of metadata columns by finding the first numeric column header."""
     import pandas as pd
@@ -122,6 +130,7 @@ def main(argv: list[str] | None = None) -> None:
     """Run the alignment pipeline."""
     pipeline_start = time.monotonic()
     args = parse_args(argv)
+    log_fh = None
 
     input_path = Path(args.input_file)
     file_size = input_path.stat().st_size
@@ -131,115 +140,133 @@ def main(argv: list[str] | None = None) -> None:
         dtw_mode = f"FastDTW (radius={args.radius})"
     else:
         dtw_mode = "FastDTW (default, radius=1)"
-    print(f"Input: {input_path} ({_format_size(file_size)})", flush=True)
-    print(f"DTW algorithm: {dtw_mode}", flush=True)
 
-    # Detect metadata columns
-    print("Detecting metadata columns...", flush=True)
-    metadata_cols = detect_metadata_cols(args.input_file)
-    print(f"Found {metadata_cols} metadata column(s)", flush=True)
-
-    # Load data
-    df, scan_axis, features_df = load_sample_matrix(args.input_file, metadata_cols)
-
-    # Get all sample IDs
-    all_ids = df.iloc[:, 0].tolist()
-
+    # Open log file in the output directory for --full mode
     if args.full:
-        # Align to every sample as reference
-        sample_signals = extract_multiple_signals(df, features_df, all_ids)
-
-        # Release DataFrames — signals are now in numpy arrays
-        del df, features_df
-
         output_dir = args.output_file if args.output_file else str(Path(args.input_file).parent)
         Path(output_dir).mkdir(parents=True, exist_ok=True)
+        log_path = Path(output_dir) / "luv-align.log"
+        try:
+            log_fh = open(log_path, "a")  # noqa: SIM115
+        except OSError as exc:
+            print(f"Warning: cannot open log file {log_path}: {exc}", flush=True)
+            print("Continuing without log file.", flush=True)
+        import shlex
+        _log(f"\n{'=' * 60}", log_fh)
+        _log(f"Run started: {time.strftime('%Y-%m-%d %H:%M:%S')}", log_fh)
+        _log(f"Command: {shlex.join(sys.argv)}", log_fh)
+        _log(f"{'=' * 60}", log_fh)
 
-        total = len(all_ids)
+    try:
+        _log(f"Input: {input_path} ({_format_size(file_size)})", log_fh)
+        _log(f"DTW algorithm: {dtw_mode}", log_fh)
 
-        # Skip samples whose output already exists (allows restarts)
-        pending_ids = []
-        skipped = 0
-        for ref_id in all_ids:
-            xz_path = Path(output_dir) / f"{ref_id}-aligned.tsv.xz"
-            if xz_path.exists():
-                skipped += 1
-            else:
-                pending_ids.append(ref_id)
+        # Detect metadata columns
+        _log("Detecting metadata columns...", log_fh)
+        metadata_cols = detect_metadata_cols(args.input_file)
+        _log(f"Found {metadata_cols} metadata column(s)", log_fh)
 
-        if skipped:
-            print(
-                f"Skipping {skipped} already-processed sample(s), "
-                f"{len(pending_ids)} remaining",
-                flush=True,
+        # Load data
+        df, scan_axis, features_df = load_sample_matrix(args.input_file, metadata_cols)
+
+        # Get all sample IDs
+        all_ids = df.iloc[:, 0].tolist()
+
+        if args.full:
+            # Align to every sample as reference
+            sample_signals = extract_multiple_signals(df, features_df, all_ids)
+
+            # Release DataFrames — signals are now in numpy arrays
+            del df, features_df
+
+            total = len(all_ids)
+
+            # Skip samples whose output already exists (allows restarts)
+            pending_ids = []
+            skipped = 0
+            for ref_id in all_ids:
+                xz_path = Path(output_dir) / f"{ref_id}-aligned.tsv.xz"
+                if xz_path.exists():
+                    skipped += 1
+                else:
+                    pending_ids.append(ref_id)
+
+            if skipped:
+                _log(
+                    f"Skipping {skipped} already-processed sample(s), "
+                    f"{len(pending_ids)} remaining",
+                    log_fh,
+                )
+
+            if not pending_ids:
+                total_elapsed = time.monotonic() - pipeline_start
+                _log(
+                    f"\nAll {total} samples already processed in {output_dir}/"
+                    f"\nTotal pipeline: {total_elapsed:.1f}s",
+                    log_fh,
+                )
+                return
+
+            workers = get_worker_count(args.slow)
+            signal_mem = sum(s.nbytes for s in sample_signals.values())
+            _log(
+                f"\nStarting parallel alignment: {len(pending_ids)} references, "
+                f"{workers} workers ({os.cpu_count()} cores), "
+                f"signal data: {_format_size(signal_mem)}",
+                log_fh,
+            )
+            _log(
+                f"Each worker receives ~{_format_size(signal_mem)} of signal data\n",
+                log_fh,
             )
 
-        if not pending_ids:
+            align_start = time.monotonic()
+            completed = 0
+            with ProcessPoolExecutor(max_workers=workers) as pool:
+                futures = {
+                    pool.submit(
+                        align_and_compress,
+                        sample_signals, ref_id, all_ids, scan_axis,
+                        output_dir, n, total, args.slow, args.radius,
+                    ): ref_id
+                    for n, ref_id in enumerate(pending_ids, skipped + 1)
+                }
+                for future in as_completed(futures):
+                    completed += 1
+                    _log(future.result(), log_fh)
+
+            align_elapsed = time.monotonic() - align_start
             total_elapsed = time.monotonic() - pipeline_start
-            print(
-                f"\nAll {total} samples already processed in {output_dir}/"
-                f"\nTotal pipeline: {total_elapsed:.1f}s",
-                flush=True,
+            _log(
+                f"\nDone. {len(pending_ids)} xz files written to {output_dir}/"
+                f" ({skipped} previously completed)"
+                f"\nAlignment: {align_elapsed:.1f}s | Total pipeline: {total_elapsed:.1f}s",
+                log_fh,
             )
-            return
+        else:
+            # Single reference alignment
+            if args.align_to_id not in all_ids:
+                print(
+                    f"Error: reference ID '{args.align_to_id}' not found in input file.",
+                    file=sys.stderr,
+                )
+                print(f"Available IDs: {', '.join(all_ids)}", file=sys.stderr)
+                sys.exit(1)
 
-        workers = get_worker_count(args.slow)
-        signal_mem = sum(s.nbytes for s in sample_signals.values())
-        print(
-            f"\nStarting parallel alignment: {len(pending_ids)} references, "
-            f"{workers} workers ({os.cpu_count()} cores), "
-            f"signal data: {_format_size(signal_mem)}",
-            flush=True,
-        )
-        print(
-            f"Each worker receives ~{_format_size(signal_mem)} of signal data\n",
-            flush=True,
-        )
+            sample_signals = extract_multiple_signals(df, features_df, all_ids)
+            del df, features_df
 
-        align_start = time.monotonic()
-        completed = 0
-        with ProcessPoolExecutor(max_workers=workers) as pool:
-            futures = {
-                pool.submit(
-                    align_and_compress,
-                    sample_signals, ref_id, all_ids, scan_axis,
-                    output_dir, n, total, args.slow, args.radius,
-                ): ref_id
-                for n, ref_id in enumerate(pending_ids, skipped + 1)
-            }
-            for future in as_completed(futures):
-                completed += 1
-                print(future.result(), flush=True)
-
-        align_elapsed = time.monotonic() - align_start
-        total_elapsed = time.monotonic() - pipeline_start
-        print(
-            f"\nDone. {len(pending_ids)} xz files written to {output_dir}/"
-            f" ({skipped} previously completed)"
-            f"\nAlignment: {align_elapsed:.1f}s | Total pipeline: {total_elapsed:.1f}s",
-            flush=True,
-        )
-    else:
-        # Single reference alignment
-        if args.align_to_id not in all_ids:
-            print(
-                f"Error: reference ID '{args.align_to_id}' not found in input file.",
-                file=sys.stderr,
+            print(f"\nAligning all samples to reference '{args.align_to_id}'...", flush=True)
+            align_start = time.monotonic()
+            align_to_reference(
+                sample_signals, args.align_to_id, all_ids, scan_axis, args.output_file, args.slow,
+                radius=args.radius,
             )
-            print(f"Available IDs: {', '.join(all_ids)}", file=sys.stderr)
-            sys.exit(1)
-
-        sample_signals = extract_multiple_signals(df, features_df, all_ids)
-        del df, features_df
-
-        print(f"\nAligning all samples to reference '{args.align_to_id}'...", flush=True)
-        align_start = time.monotonic()
-        align_to_reference(
-            sample_signals, args.align_to_id, all_ids, scan_axis, args.output_file, args.slow,
-            radius=args.radius,
-        )
-        total_elapsed = time.monotonic() - pipeline_start
-        print(f"Total pipeline: {total_elapsed:.1f}s", flush=True)
+            total_elapsed = time.monotonic() - pipeline_start
+            print(f"Total pipeline: {total_elapsed:.1f}s", flush=True)
+    finally:
+        if log_fh is not None:
+            log_fh.close()
 
 
 if __name__ == "__main__":

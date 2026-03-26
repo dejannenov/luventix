@@ -10,6 +10,12 @@ from luv_align.alignment import align_with_dtw, apply_intensity_threshold
 from luv_align.io import export_aligned_matrix
 
 
+def _counter(n: int, total: int) -> str:
+    """Format a counter like ``[  3 of 100]`` with right-aligned numbers."""
+    width = len(str(total))
+    return f"[{n:>{width}} of {total}]"
+
+
 def align_to_reference(
     sample_signals: dict[str, object],
     ref_id: str,
@@ -31,7 +37,7 @@ def align_to_reference(
     total = len(targets)
     for n, sample_id in enumerate(targets, 1):
         print(
-            f"  {prefix}[{n} of {total}] {dtw_label} aligning "
+            f"  {prefix}{_counter(n, total)} {dtw_label} aligning "
             f"'{sample_id}' to reference '{ref_id}'..."
         )
         aligned[sample_id] = apply_intensity_threshold(
@@ -60,26 +66,29 @@ def align_and_compress(
     """
     t0 = time.monotonic()
     tsv_path = Path(output_dir) / f"{ref_id}-aligned.tsv"
-    print(f"\n=== [{n} of {total}] Aligning to reference: {ref_id} ===")
-    file_label = f"[{n} of {total}]"
+    tag = _counter(n, total)
+    print(f"\n=== {tag} Aligning to reference: {ref_id} ===")
     align_to_reference(
-        sample_signals, ref_id, all_ids, scan_axis, str(tsv_path), use_full_dtw, file_label,
+        sample_signals, ref_id, all_ids, scan_axis, str(tsv_path), use_full_dtw, tag,
         radius=radius,
     )
 
     xz_path = tsv_path.with_suffix(".tsv.xz")
     tsv_size = tsv_path.stat().st_size
+    print(f"  {tag} Compressing {ref_id} ({tsv_size // 1024}KB)...", flush=True)
     # preset 6 is the default; preset 9 uses ~600MB RAM per stream which
     # compounds badly when multiple workers compress in parallel.
+    # Stream in chunks to avoid loading the entire TSV into memory.
     with open(tsv_path, "rb") as f_in, lzma.open(xz_path, "wb", preset=6) as f_out:
-        f_out.write(f_in.read())
+        while chunk := f_in.read(1024 * 1024):
+            f_out.write(chunk)
     xz_size = xz_path.stat().st_size
     tsv_path.unlink()
 
     elapsed = time.monotonic() - t0
     ratio = (1 - xz_size / tsv_size) * 100 if tsv_size > 0 else 0
     return (
-        f"[{n} of {total}] {ref_id}: {elapsed:.1f}s, "
+        f"{tag} {ref_id}: {elapsed:.1f}s, "
         f"compressed {tsv_size // 1024}KB → {xz_size // 1024}KB ({ratio:.0f}% reduction)"
     )
 
